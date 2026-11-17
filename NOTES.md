@@ -1311,3 +1311,30 @@ v33 full-panel confirmation):
   service start inside `PE_lockdown_iokit()`'s matching, the timer is still
   dead, and the eMMC/GPT answer is still unmeasured (the probe never ran
   because 0091 panicked before it).
+
+### Session 2026-11-17 (cont. 5): v55 (0092) built and verified
+
+- **xnu dispatch run 44137179904 (DEVELOPMENT/SWEET): GREEN.**
+  `kernel.development.sweet` SHA256
+  `5a1169ee7acd11950c3789a9a6578f307c799be552d3678a17bacdf70cd6fb96`
+  (17,239,248 B). Note for future sessions: two **push-triggered** xnu runs
+  (44124928088, 44134195110) came back `cancelled` after ~15 min with an empty
+  step list; the identical `workflow_dispatch` run built fine both times - if
+  a push run shows `cancelled`/no steps, re-dispatch instead of debugging the
+  tree.
+- **v55 image (local, user's own header/DTB):**
+  `out/shim-boot-merlin-v55-trace.img`, SHA256
+  `a08f19ea2520ca3bc7b2f92b9e89f3e3824fa7fd83886c6c90ec52f041625d7f`
+  (16,822,272 B), payload `ac0b3a94…` cmdline `... noprogress msdcprobe=1`;
+  `verify-bootimg.py` PASS (7/7). `strings` on the payload lists exactly the
+  four markers (`interrupts enabled`, `PE_lockdown_iokit enter/done`,
+  `bsd_init enter`) and no `EARLY_BOOT done` - the IRQ-off print is gone.
+- **Reading the next photo:** the `MERLIN GIC[prematching]:` lines (7) and
+  `MERLIN MSDC:` lines (~10) now print right after `spllo()`, so they are
+  inside the visible window above the frontier; the `SWEET PHASE:` markers
+  then say whether the stall is inside the IOKit matching (`PE_lockdown_iokit
+  done` missing) or later (`bsd_init enter` missing). Panic screens are
+  actionable now: `tools/macho-symbolize.py <kernel.development.sweet>
+  0xfffffe...` resolves the caller and backtrace (the DEVELOPMENT kernel keeps
+  its symbol table; the artifact is re-downloadable with
+  `gh run download <run> -n xnu-kernel`).
