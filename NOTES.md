@@ -1397,3 +1397,36 @@ v33 full-panel confirmation):
 - Everything the user saw as "no change" for v55/v56 is consistent: both
   kernels were effectively 0093 (v55) / 0093+misbased (v56) with the
   diagnostics ~40 rows above the photo region.
+
+### Session 2026-11-17 (cont. 8): BATTERY frontier explained to the user + 0095 display-start trace (v58)
+
+- User: the boot still stops at `SWEET BATTERY: static fallback` (anxious).
+  Status correction for them: that line is the KNOWN frontier of every
+  successful merlin boot so far, not a new failure - it means the kernel is
+  healthy (no reset, no panic, watchdog off) and the battery service works.
+  Everything since v53a has been building the instrumentation to see past it.
+- **Open item from v57 (must be answered by the user's photo): did the v57
+  lines appear?** v57 (0094, run 44149865276, image
+  `0e79904e…`) prints `SWEET PHASE: pre-matching diagnostics`,
+  `MERLIN MSDC: bootarg found/calling probe/...`, the `MERLIN GIC[prematching]`
+  report and `SWEET PHASE: PE_lockdown_iokit enter` in the region between
+  `No POST boot-arg set.` and `SWEET: starting device-tree platform expert`.
+  If those lines are on the photo, we hold the timer verdict and the eMMC
+  verdict; if not, the flash is not landing.
+- Post-BATTERY stall suspect: **AppleCLCD on the /arm-io/disp0 nub** (patch
+  0046 display driver). It prints NOTHING until its final success line, so a
+  hang inside its start is invisible. **Patch 0095** (commit `8827f66`, xnu
+  run 44154080363 GREEN, applied + guard clean; kernel
+  `8d31be88335ee6770d712527079e4c5ea0cdf46dbd51f8c16f266966eb7d7de1`): markers
+  at `AppleCLCD::start` entry, after `PE_current_console`, after the
+  surface/workloop allocations, and at the end of SweetPlatformExpert nub
+  creation. Decision tree for the next photo: `SWEET FB: start enter` present
+  but the sequence stops at a marker = hang at that exact step; no
+  `start enter` at all = matching never reaches the display nub (trace moves
+  to the matching machinery); the boot proceeds past the FB lines = the
+  display driver was fine and the wall is elsewhere.
+- **v58 image ready (user header/DTB, verifier PASS 7/7):**
+  `out/shim-boot-merlin-v58-fbtrace.img` SHA256
+  `9196e7a9d5f1a427b48e2f2ad3d9ccc549ac326dba909c417fa4b0f36e74333e`,
+  payload `be84cb12…` (contains all 0095 markers), cmdline
+  `... noprogress msdcprobe=1`. Not yet flashed.
