@@ -1338,3 +1338,30 @@ v33 full-panel confirmation):
   0xfffffe...` resolves the caller and backtrace (the DEVELOPMENT kernel keeps
   its symbol table; the artifact is re-downloadable with
   `gh run download <run> -n xnu-kernel`).
+
+### Session 2026-11-17 (cont. 6): v55 missing MSDC lines -> fixed ordering/checkpoints; v56 built (not on device)
+
+- User says no `MERLIN MSDC` lines in v55. That is not yet a hardware result:
+  v55 calls `merlin_gic_report()` **before** the MSDC probe, and the GIC helper
+  performs multiple volatile MMIO maps/reads before any eMMC line; if it stalls
+  or aborts there, the card was never tested. v55 also had no parsed-boot-arg
+  checkpoint, so the missing line couldn't distinguish a false `msdcprobe`
+  boot arg from not reaching the call. Corrected the test instead of guessing.
+- **Patch 0093** (`xnu/patches/0093-merlin-msdc-probe-checkpoints.patch`, commit
+  `13f288f`): immediately after `spllo()`, print the parsed boot-arg
+  (`found/value`), then (if found and nonzero) `calling probe`, run the eMMC
+  probe BEFORE GIC MMIO, and print its result. Additional lines inside the
+  driver: `controller init enter`, `/merlin-msdc` ADT reg+size, DMA VA+PA,
+  CMD13 start, plus the existing register dump/CMD13/GPT results. A photo now
+  tells us if the argument was absent, if the ADT lookup/map/DMA failed, or if
+  the card command stalls. GIC report is after the eMMC probe.
+- **xnu run 44142450160 (push) GREEN**, `kernel.development.sweet`
+  SHA256 `1327ceaf515aafb91bf3c3258ced35097b85ef3e06d76934314e35b55e6c3f5d`
+  (17,239,248 B).
+- **v56 image ready (local, proven user header+DTB):**
+  `out/shim-boot-merlin-v56-msdc-diagnostics.img`, SHA256
+  `00a7500e8ae6eb1c0a9a7240fafd4f6a681266210c474888a5b9456734e15c5f`
+  (16,822,272 B), cmdline `... noprogress msdcprobe=1`, 0093 kernel + exact
+  user `backup/boot.img` header + `dtb/stock-merlin.dtb`, 0093 ADT. Verifier
+  PASS (7/7); payload strings independently contain all new checkpoint
+  strings. It has not been flashed.
