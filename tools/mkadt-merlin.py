@@ -55,6 +55,12 @@ TIMEBASE = 13000000
 FB, FB_SIZE = 0x7e605000, 0x17e8000
 FB_W, FB_H, FB_STRIDE = 1080, 2340, 1088 * 4
 
+# Internal eMMC controller (MTK MSDC0, "msdc@11230000" in mt6768.dts). The
+# polled root driver (bsd/dev/merlin_msdc.c, patch 0090) reads this absolute
+# physical address straight from the ADT, like /sweet-ufs on the sweet port:
+# the node lives at the ADT root, not under /arm-io, so reg is not relative.
+MSDC0, MSDC0_SIZE = 0x11230000, 0x10000
+
 # merlin.dts cpus: reg 0x000..0x700 (Aff1:Aff0), A55 1.701 GHz, A75 2.171 GHz
 A55_FREQ = 1701000000
 A75_FREQ = 2171000000
@@ -222,6 +228,15 @@ def build(seed=None, qemu=False):
 
     pram = node('pram', [ph(), ('reg', u64(panic_base) + u64(PANIC_LOG_SIZE))])
 
+    # Internal eMMC (see MSDC0 above): the iOS root image is dd'ed into the
+    # existing Android "userdata" GPT partition of this card.
+    msdc = node('merlin-msdc', [
+        ph(),
+        ('device_type', cstr('eMMC')),
+        ('compatible', cstr('mediatek,mt6768-msdc') + cstr('mediatek,msdc')),
+        ('reg', u64(MSDC0, MSDC0_SIZE)),
+    ])
+
     # Identity of the iPhone X userland + merlin platform strings. The
     # kernel binary is the SWEET machine config, whose platform expert
     # matches 'xiaomi,sweet' — that string stays until the merlin platform
@@ -236,7 +251,7 @@ def build(seed=None, qemu=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram, msdc] + product)
 
 
 if __name__ == '__main__':

@@ -1080,3 +1080,59 @@ v33 full-panel confirmation):
     GitHub release) for byte-exact v-series inputs, or use the local v50
     (out/shim-boot-merlin-v50-gicprobe.img, 75d72f06...) that is already
     READY on the user's Windows machine.
+
+### Session 2026-11-17: M2 started — polled MSDC0 eMMC root device (patch 0090) + CI cmdline input (agent, no device action)
+
+- User goal this session: "finish the Redmi Note 9 port". No phone was attached
+  to this machine (`fastboot devices` empty, only an unrelated `emulator-5554`
+  in adb), so nothing was booted or flashed; the work is offline code + CI.
+  The honest state of the port stays what the sections above say: Darwin
+  executes and reaches the IOKit/BSM start, then the kernel's first
+  timeout-based wait never returns because the vtimer never fires (the v49/v50
+  GIC probe is still the deciding test), and no storage driver exists yet.
+- **Observation that shaped this session:** `IOFindBSDRoot()` starts with
+  `IOService::waitForMatchingService(gIOResources/gIOBSD, 30 s)` — the exact
+  stall identified in the v48 analysis — and the sweet UFS root hook lives
+  *after* it. So on merlin even `rd=ufsroot0`-style rooting could never be
+  reached until the GIC/timer wall is fixed. M2 therefore cannot be gated on
+  the timer if the storage path is fully polled and is checked *before* that
+  wait.
+- **Patch 0090 (`xnu/patches/0090-merlin-msdc-root.patch`, new file
+  `bsd/dev/merlin_msdc.c`):** fresh, polled MSDC0 driver, written from the
+  device's own `drivers/mmc/host/mtk-sd.c` register map + `mt6768.dts`
+  (msdc@11230000), NOT from the old merlin patch series (decision record).
+  It reuses the state MTK LK left behind (card clock 0x00 MSDC_CFG CKSTB,
+  bus width in SDC_CFG, pad tuning), takes the interrupt mask down, and issues
+  iteration-bounded polled CMD13/CMD16/CMD17/CMD18 with the controller's own
+  GPD/BD descriptor DMA into one physically contiguous bounce buffer
+  (`kmem_alloc_contig` + `pmap_find_phys`, cache maintenance via
+  `flush_dcache64`). It reads the eMMC GPT, finds `userdata` (boot arg
+  `msdcroot=`), and exposes exactly that extent read-only as `msdcroot0` /
+  `rmsdcroot0` with 512-byte logical sectors. No writes are implemented.
+- **`rd=msdcroot0` and `msdcprobe=1` are handled at the TOP of
+  `IOFindBSDRoot`** (iokit/bsddev/IOKitBSDInit.cpp), i.e. before the gIOBSD
+  wait. `msdcprobe=1` runs the same diagnostics (register dump, CMD13 per
+  candidate RCA, CMD16, LBA0 read, GPT walk) and then boots on unchanged —
+  that is the next observable test.
+- **`tools/mkadt-merlin.py`:** new root-level `/merlin-msdc` node
+  (`reg = <0x11230000 0x10000>`, absolute PA like `/sweet-ufs` on sweet).
+  The driver maps it with `ml_io_map` and prints a message and bails if the
+  node is absent, so a non-merlin ADT is unaffected.
+- **`image.yml`:** new dispatch input `extra_cmdline` (appended to the
+  standard bring-up cmdline, used by mkpayload *and* verify-bootimg, so the
+  existing verification still gates the image) and a FLASH-doc section that
+  explains the `MERLIN MSDC:` lines for the `msdcprobe=1` run.
+- **Offline verification done:** the patch applies cleanly against the
+  post-0001-0088 tree (`patch -p1 --dry-run`), `mkadt-merlin.py` regenerates
+  the ADT with the new node (10,212 B, `/merlin-msdc` reg correct), the
+  workflow YAML parses and its shell blocks pass `bash -n`. **Not verified:
+  compile (that is the CI run below) and anything on hardware.** The
+  register-level risks are called out in the source: the bootloader's RCA
+  (tried 0/1/2), the HS400/tuning state being reused as-is, and the data
+  phase being armed after CMDRDY exactly like mtk-sd's IRQ path.
+- Next wall after a successful probe (already known, do not re-derive): a
+  card that does not answer any RCA needs a full re-init at a low clock
+  (CMD0/1/2/3/9/16 and an 8-bit/high-speed switch), which the current
+  driver intentionally does not do yet; and mounting the HFS+ root still
+  needs the timer or another way to satisfy the remaining BSD waits, plus
+  the userspace milestones above.

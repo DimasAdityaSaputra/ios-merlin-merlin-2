@@ -21,6 +21,9 @@ on:
       image_tag:
         description: "image-series tag (file names, artifact name, FLASH doc)"
         default: "v51"
+      extra_cmdline:
+        description: "appended to the standard bring-up cmdline (e.g. msdcprobe=1, rd=msdcroot0)"
+        default: ""
       build_images:
         description: "false = fetch + verify the stock firmware only (staged first run)"
         default: "true"
@@ -49,7 +52,7 @@ jobs:
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
-      CMDLINE: debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress
+      CMDLINE: debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress ${{ inputs.extra_cmdline }}
     steps:
       - uses: actions/checkout@v4
 
@@ -290,6 +293,30 @@ jobs:
             echo "- istatus=1 + pend bit27   -> GICR fine, delivery path broken"
             echo "- istatus=1 + no pend      -> enable/group routing lost"
             echo
+            if [ -n "${{ inputs.extra_cmdline }}" ]; then
+              echo "## Extra boot args: \`${{ inputs.extra_cmdline }}\`"
+              echo
+              echo "With \`msdcprobe=1\` (patch 0090, bsd/dev/merlin_msdc.c) the polled"
+              echo "eMMC driver runs before IOFindBSDRoot's gIOBSD stall and prints:"
+              echo
+              echo '```'
+              echo "MERLIN MSDC: CFG ... (ckstb ckmode ckdiv hs400 pio)"
+              echo "MERLIN MSDC: IOCON ... SDC_CFG ... (bus N bits) SDC_STS ..."
+              echo "MERLIN MSDC: CMD13 rca 1 -> 0, status ... (state N)"
+              echo "MERLIN MSDC: CMD16 (block length 512) -> 0"
+              echo "MERLIN MSDC: LBA0 read -> 0, ..."
+              echo "MERLIN MSDC: GPT ok, N entries of 128 bytes at LBA 2"
+              echo "MERLIN MSDC:   part 0 \"...\" lba a..b (c MiB)   (one line per GPT entry)"
+              echo "MERLIN MSDC: userdata lookup -> 0"
+              echo '```'
+              echo
+              echo "Read it as: ckstb=0 -> LK's card clock state was lost (clock bring-up"
+              echo "next); CMD13 error but some RCA answers -> bootloader RCA differs;"/
+              echo "no RCA answers -> the card needs a full re-init (CMD0/1/2/3 at a"
+              echo "low clock) - the next patch; LBA0 read ok but no GPT signature ->"
+              echo "reads/misalignment; GPT list without \"userdata\" -> compare names."
+              echo
+            fi
             echo "## Variants"
             echo
             echo "- shim-boot-merlin-$TAG-dev.img - DEVELOPMENT kernel (THE flash test)"
