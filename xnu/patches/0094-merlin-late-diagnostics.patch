@@ -1,7 +1,7 @@
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
-@@ -717,28 +717,6 @@
+@@ -717,32 +717,6 @@
  	ml_spin_debug_clear_self();
  #endif
  	(void) spllo();         /* Allow interruptions */
@@ -19,18 +19,22 @@ diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
 -		extern void merlin_gic_report(const char *tag);
 -		extern int merlin_msdc_probe(void);
 -		uint32_t sweetProbe = 0;
+-		boolean_t probeArg = PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe));
 -
--		merlin_gic_report("prematching");
--		if (PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe)) &&
--		    sweetProbe) {
--			printf("MERLIN MSDC: probe result %d\n", merlin_msdc_probe());
+-		printf("MERLIN MSDC: bootarg found=%u value=%u\n", probeArg, sweetProbe);
+-		/* Do card I/O before the GIC MMIO report; each has an explicit entry marker. */
+-		if (probeArg && sweetProbe) {
+-			printf("MERLIN MSDC: calling probe\n");
+-			int probeError = merlin_msdc_probe();
+-			printf("MERLIN MSDC: probe result %d\n", probeError);
 -		}
+-		merlin_gic_report("prematching");
 -	}
 -#endif
  
  	/*
  	 * This will start displaying progress to the user, start as early as possible
-@@ -808,6 +786,31 @@
+@@ -812,6 +786,31 @@
  #ifdef  IOKIT
  	kernel_bootstrap_log("PE_lockdown_iokit");
  #if defined(ARM64_BOARD_CONFIG_SWEET)

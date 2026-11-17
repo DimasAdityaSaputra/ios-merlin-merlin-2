@@ -120,7 +120,13 @@ jobs:
         run: |
           # build.sh skips any patch that does not git-apply (upstream
           # leftovers legitimately skip; OUR numbered patches must not).
-          if grep -E 'Skipping patch .*patches/00[0-9]{2}-' build.log; then
+          # The Build step runs in dxb/ (working-directory), so its tee wrote
+          # dxb/build.log; grep there and fail if the log is missing - a
+          # missing log must not read as "nothing skipped" (2026-11-17: this
+          # guard passed vacuously for exactly that reason while 0094 was
+          # being skipped).
+          test -f dxb/build.log || { echo "::error::dxb/build.log missing - cannot verify the patch series applied"; exit 1; }
+          if grep -aE 'Skipping patch .*patches/00[0-9]{2}-' dxb/build.log; then
             echo "::error::A numbered SWEET patch failed to apply - the kernel artifact is missing its changes."
             exit 1
           fi
