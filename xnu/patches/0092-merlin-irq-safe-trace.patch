@@ -1,0 +1,66 @@
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -697,15 +697,33 @@
+ 	 */
+ 	kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT);
+ 
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
+-	printf("SWEET PHASE: EARLY_BOOT done\n");
+-#endif
+-
+ #if SCHED_HYGIENE_DEBUG
+ 	// Reset interrupts masked timeout before we enable interrupts
+ 	ml_spin_debug_clear_self();
+ #endif
+ 	(void) spllo();         /* Allow interruptions */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * MERLIN diagnostics (patch 0092). They must run with interrupts on:
++	 * console_io_allowed() panics on any printf with IRQs off once
++	 * startup_phase >= EARLY_BOOT, which is exactly what the patch 0091
++	 * EARLY_BOOT marker did on the phone (panic caller __cnputs.cold.1).
++	 * spllo() above is the first legal point, and everything after it still
++	 * lands inside the console's 73-row window at the frontier.
++	 */
++	printf("SWEET PHASE: interrupts enabled\n");
++	{
++		extern void merlin_gic_report(const char *tag);
++		extern int merlin_msdc_probe(void);
++		uint32_t sweetProbe = 0;
++
++		merlin_gic_report("prematching");
++		if (PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe)) &&
++		    sweetProbe) {
++			printf("MERLIN MSDC: probe result %d\n", merlin_msdc_probe());
++		}
++	}
++#endif
+ 
+ 	/*
+ 	 * This will start displaying progress to the user, start as early as possible
+@@ -775,24 +793,7 @@
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-	/*
+-	 * MERLIN phase trace + last-minute diagnostics (patch 0091). The boot's
+-	 * visible frontier is the service start inside the matching below, so
+-	 * this runs before it - and it is the last point where the console can
+-	 * still show the GIC/timer state and the eMMC probe result.
+-	 */
+ 	printf("SWEET PHASE: PE_lockdown_iokit enter\n");
+-	{
+-		extern void merlin_gic_report(const char *tag);
+-		extern int merlin_msdc_probe(void);
+-		uint32_t sweetProbe = 0;
+-
+-		merlin_gic_report("prematching");
+-		if (PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe)) &&
+-		    sweetProbe) {
+-			printf("MERLIN MSDC: probe result %d\n", merlin_msdc_probe());
+-		}
+-	}
+ #endif
+ 	PE_lockdown_iokit();
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
