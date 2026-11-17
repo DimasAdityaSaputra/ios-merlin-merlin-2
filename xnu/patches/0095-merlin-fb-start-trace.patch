@@ -1,0 +1,42 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -154,10 +154,15 @@
+ {
+ 	PE_Video video;
+ 
++	IOLog("SWEET FB: start enter (provider %s)\n",
++	    provider ? provider->getName() : "none");
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
+ 	PE_current_console(&video);
++	IOLog("SWEET FB: PE video base %llx %ux%u stride %u\n",
++	    (uint64_t)video.v_baseAddr, video.v_width, video.v_height,
++	    video.v_rowBytes);
+ 	fPhys = video.v_baseAddr;
+ 	fWidth = (uint32_t)video.v_width;
+ 	fHeight = (uint32_t)video.v_height;
+@@ -179,8 +184,11 @@
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
++	IOLog("SWEET FB: surface %p\n", fSurface);
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
+ 	fWorkLoop = IOWorkLoop::workLoop();
++	IOLog("SWEET FB: workloop %p lock %p clients %p\n",
++	    fWorkLoop, fLock, fClients);
+ 	if (fLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL) {
+ 		IOLog("SWEET FB: setup failed\n");
+ 		OSSafeReleaseNULL(fSurface);    /* stays published: also held by the table */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -72,6 +72,7 @@
+ 		createNubs(this, IODTFindMatchingEntries(armio, kIODTExclusive, "('gic')"));
+ 		armio->release();
+ 	}
++	IOLog("SWEET PE: nubs created (top-level + arm-io children)\n");
+ }
+ 
+ /*
