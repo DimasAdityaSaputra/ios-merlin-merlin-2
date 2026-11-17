@@ -1,0 +1,357 @@
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -38,6 +38,14 @@
+ void pe_init_fiq(void);
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern uint32_t sweet_vtimer_intid;
++/*
++ * MERLIN (patch 0096): the timer PPI is chosen at runtime. pe_fiq probes
++ * whether the virtual timer's PPI can actually be made pending in this
++ * GIC; if it cannot, the physical timer PPI is used instead and every
++ * consumer (sleh_irq, ml_set_decrementer) follows these two values.
++ */
++extern uint32_t sweet_timer_intid;
++extern uint32_t sweet_timer_is_phys;
+ #endif
+ 
+ #ifdef PRIVATE
+
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -20,6 +20,19 @@
+ #if defined(SWEET)
+ /* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
+ SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
++/*
++ * MERLIN (patch 0096): which architected timer this CPU really uses.
++ * Standard ARM numbering is 27 (virtual) / 30 (physical); Qualcomm's
++ * numbering is 19/16. The DT property picks the virtual one and the probe
++ * below may switch the pair to the physical timer.
++ */
++#define SWEET_PHYS_TIMER_INTID 30
++/* ~100 us of a 13 MHz timebase: long enough to latch, short enough to spin. */
++#define SWEET_PPI_PROBE_TICKS  1300
++#define SWEET_GICR_ISPENDR0    0x10200 /* SGI frame (+0x10000) + 0x200 */
++
++SECURITY_READ_ONLY_LATE(uint32_t) sweet_timer_intid = SWEET_VTIMER_INTID;
++SECURITY_READ_ONLY_LATE(uint32_t) sweet_timer_is_phys = 0;
+ #endif
+ 
+ static vm_offset_t gicd_base;
+@@ -55,22 +68,45 @@
+ {
+ 	// We only care about aff1 and aff0
+ 	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
++	vm_offset_t first_valid = 0;
+ 
+ 	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_PE_SIZE) {
+ 		vm_offset_t gicr_pe_base = gicr_base + offset;
+ 		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
+ 		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+ 
++		/*
++		 * MERLIN (patch 0096): a frame in an unmapped or powered-down
++		 * window reads as all-zero or all-ones. All-zero carries
++		 * affinity 0, so it matched the boot core by accident and the
++		 * pre-0096 code happily programmed a dead frame. Require a
++		 * plausible GICR_TYPER before trusting the affinity field.
++		 */
++		if (gicr_typer == 0 || gicr_typer == ~0ULL) {
++			continue;
++		}
++
+ 		if (phys_id == aff_value) {
+ 			return gicr_pe_base;
+ 		}
+ 
++		/* Single-core bring-up: any frame with a real TYPER will do. */
++		if (first_valid == 0) {
++			first_valid = gicr_pe_base;
++		}
++
+ 		if (gicr_typer & GICR_TYPER_LAST) {
+ 			break;
+ 		}
+ 	}
+ 
+-	panic("%s: cannot find GICR base for core %u", __func__, ml_get_cpu_number(phys_id));
++	/*
++	 * MERLIN (patch 0096): do not panic here. A DT/GIC mismatch used to stop
++	 * the boot before anything could be observed. Returning 0 leaves the
++	 * caller to skip redistributor programming while the CPU interface and
++	 * the rest of the kernel still start.
++	 */
++	return first_valid;
+ }
+ 
+ void
+@@ -155,11 +191,13 @@
+ 
+ 		uint64_t gicr_wake_deadline;
+ 		nanoseconds_to_deadline(os_atomic_load(&gicr_wake_timeout_ns, relaxed), &gicr_wake_deadline);
+-		while (gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDRENASLEEP) {
++		/* MERLIN (patch 0096): hard iteration cap as well as the deadline. */
++		for (unsigned int wake_spin = 0;
++		    (gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDRENASLEEP) && wake_spin < 10000000;
++		    wake_spin++) {
+ 			// Spin
+ 			if (gicr_wake_timeout_ns > 0 && mach_absolute_time() > gicr_wake_deadline) {
+-				panic("%s: core %u timed out waiting for redistributor to wake up",
+-				    __func__, ml_get_cpu_number_local());
++				break;
+ 			}
+ 		}
+ 	}
+@@ -171,17 +209,29 @@
+ 	 * and arrives as an IRQ (see sleh_irq). GICR_IGROUPR0 reads as zero
+ 	 * from the non-secure side even after this write; delivery still works.
+ 	 */
+-	gicr_write32(GICR_IGROUPR0, 0xFFFFFFFF);
+-	for (unsigned int i = 0; i < 32; i += 4) {
+-		gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
++	if (gicr_pe_base != 0) {
++		gicr_write32(GICR_IGROUPR0, 0xFFFFFFFF);
++		for (unsigned int i = 0; i < 32; i += 4) {
++			gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
++		}
++		/*
++		 * MERLIN (patch 0096): enable both architected timer PPIs. Only the
++		 * selected one is ever unmasked, so the spare cannot fire, but both
++		 * are enabled so the probe below can switch sources without touching
++		 * the redistributor again.
++		 */
++		gicr_write32(GICR_ISENABLER0,
++		    (1U << sweet_vtimer_intid) | (1U << SWEET_PHYS_TIMER_INTID) |
++		    (1U << SWEET_IPI_SGI));
+ 	}
+-	gicr_write32(GICR_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
+ #else
+-	// Configure timers and legacy FIQ to be group 0
+-	gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);
++	if (gicr_pe_base != 0) {
++		// Configure timers and legacy FIQ to be group 0
++		gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);
+ 
+-	// Enable PPI 27
+-	gicr_write32(GICR_ISENABLER0, (1 << 27));
++		// Enable PPI 27
++		gicr_write32(GICR_ISENABLER0, (1 << 27));
++	}
+ #endif /* SWEET */
+ 
+ 	// Enable system register access
+@@ -216,46 +266,71 @@
+ 
+ 	{
+ 		/*
+-		 * SWEET boot probe (0088): read back what the redistributor
+-		 * and CPU interface actually accepted, then check whether the
+-		 * virtual timer PPI becomes pending (CNTV_CTL.ISTATUS +
+-		 * GICR_ISPENDR0 bit 27). Console output is proven up here
+-		 * (0082 fbcon; panics from this function print). SGI frame is
+-		 * RD frame + 0x10000; ISPENDR0 = SGI + 0x200.
++		 * MERLIN (patch 0096): pick the timer source this CPU can actually
++		 * receive. Two independent facts are measured instead of assumed:
++		 *   ISTATUS  - the timebase counted down to the compare value;
++		 *   ISPENDR0 - the GIC accepted that PPI as pending.
++		 * If the virtual timer's PPI never becomes pending but the counter
++		 * clearly fired, the virtual path is unusable here (secure/trapped
++		 * timer, PPI owned by the other security state, ...). The physical
++		 * timer is then probed once; if it pends, the whole timer path
++		 * switches to it: sleh_irq accepts sweet_timer_intid and
++		 * ml_set_decrementer arms the physical timer instead.
++		 *
++		 * Both PPIs were enabled above: only the selected timer is ever
++		 * unmasked, so the spare stays silent.
+ 		 */
+-#define SWEET_GICR_ISPENDR0 0x10200
+ 		uint64_t ctl_saved = __builtin_arm_rsr64("CNTV_CTL_EL0");
+ 		uint64_t cval_saved = __builtin_arm_rsr64("CNTV_CVAL_EL0");
+-		uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
+-		uint64_t typer = gicr_read64(GICR_TYPER);
+-		uint32_t waker = gicr_read32(GICR_WAKER);
+-		uint32_t igrp = gicr_read32(GICR_IGROUPR0);
+-		uint32_t isen = gicr_read32(GICR_ISENABLER0);
+-		uint32_t gicd_rb = gicd_read32(GICD_CTLR);
+-		uint64_t igrpen1 = __builtin_arm_rsr64("ICC_IGRPEN1_EL1");
+-		uint64_t sre = __builtin_arm_rsr64("ICC_SRE_EL1");
+-		uint32_t istatus = 0;
++		uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
++		uint32_t istatus = 0, vpend = 0, ppend = 0;
+ 		unsigned int spin;
+-		kprintf("SWEET GIC: mpidr=%llx typer=%llx waker=%x igrp=%x isen=%x\n",
+-		    mpidr, typer, waker, igrp, isen);
+-		kprintf("SWEET GIC: gicd_ctlr=%x igrpen1=%llx sre=%llx\n",
+-		    gicd_rb, igrpen1, sre);
+-		/* One ~100 us shot @ 13 MHz, then poll the pending status. */
+-		__builtin_arm_wsr64("CNTV_CVAL_EL0",
+-		    __builtin_arm_rsr64("CNTVCT_EL0") + 1300);
+-		__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_ENABLE);
+-		for (spin = 0; spin < 130000; spin++) {
+-			if (__builtin_arm_rsr64("CNTV_CTL_EL0") & CNTV_CTL_EL0_ISTATUS) {
+-				istatus = 1;
+-				break;
++
++		if (gicr_pe_base != 0) {
++			__builtin_arm_wsr64("CNTV_CVAL_EL0", now + SWEET_PPI_PROBE_TICKS);
++			__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_ENABLE);
++			for (spin = 0; spin < 130000; spin++) {
++				if (__builtin_arm_rsr64("CNTV_CTL_EL0") & CNTV_CTL_EL0_ISTATUS) {
++					istatus = 1;
++					break;
++				}
++			}
++			vpend = gicr_read32(SWEET_GICR_ISPENDR0) & (1U << sweet_vtimer_intid);
++
++			if (istatus && !vpend) {
++				/* Virtual PPI is dead here: try the physical timer PPI. */
++				__builtin_arm_wsr64("CNTP_CVAL_EL0", now + SWEET_PPI_PROBE_TICKS);
++				__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_ENABLE);
++				for (spin = 0; spin < 130000; spin++) {
++					if (__builtin_arm_rsr64("CNTP_CTL_EL0") & CNTP_CTL_EL0_ISTATUS) {
++						break;
++					}
++					if (gicr_read32(SWEET_GICR_ISPENDR0) & (1U << SWEET_PHYS_TIMER_INTID)) {
++						break;
++					}
++				}
++				ppend = gicr_read32(SWEET_GICR_ISPENDR0) & (1U << SWEET_PHYS_TIMER_INTID);
++				__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++
++				if (ppend) {
++					sweet_timer_intid = SWEET_PHYS_TIMER_INTID;
++					sweet_timer_is_phys = 1;
++					/* Keep the unusable virtual timer from asserting. */
++					__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_IMASKED);
++					ctl_saved = CNTV_CTL_EL0_IMASKED;
++				}
+ 			}
+ 		}
+-		kprintf("SWEET GIC: tick istatus=%u pend=%x ctl=%llx\n", istatus,
+-		    gicr_read32(SWEET_GICR_ISPENDR0),
+-		    __builtin_arm_rsr64("CNTV_CTL_EL0"));
+-		__builtin_arm_wsr64("CNTV_CVAL_EL0", cval_saved);
+-		__builtin_arm_wsr64("CNTV_CTL_EL0", ctl_saved);
++
++		if (!sweet_timer_is_phys) {
++			__builtin_arm_wsr64("CNTV_CVAL_EL0", cval_saved);
++			__builtin_arm_wsr64("CNTV_CTL_EL0", ctl_saved);
++		}
+ 		__builtin_arm_isb(ISB_SY);
++
++		kprintf("MERLIN TIMER: gicr=%llx intid=%u phys=%u istatus=%u vpend=%u ppend=%u\n",
++		    (uint64_t)gicr_pe_base, sweet_timer_intid, sweet_timer_is_phys,
++		    istatus, (uint32_t)!!vpend, (uint32_t)!!ppend);
+ 	}
+ #else
+ 	// Enable the forwarding of the vtimer interrupt
+
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1847,6 +1847,11 @@
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(SWEET)
++/* MERLIN (patch 0096): first-tick proof, see sleh_irq. */
++static uint32_t sweet_timer_tick_log;
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -1867,9 +1872,21 @@
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
+-	if (intid == sweet_vtimer_intid) {
++	if (intid == sweet_timer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
++		/*
++		 * MERLIN (patch 0096): the timer path was never observed working on
++		 * this SoC, so the first ticks print themselves. This is the only
++		 * measurement that proves real interrupt delivery end to end (GIC
++		 * accepted, CPU interface forwarded, vector dispatched).
++		 */
++		if (sweet_timer_tick_log < 3) {
++			sweet_timer_tick_log++;
++			kprintf("MERLIN TIMER: tick %u intid=%u base=%llu\n",
++			    sweet_timer_tick_log, intid,
++			    __builtin_arm_rsr64("CNTVCT_EL0"));
++		}
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
+@@ -1928,6 +1945,17 @@
+ 	uint64_t pmcr0 = 0, upmsr = 0;
+ #endif /* MONOTONIC_FIQ */
+ 
++#if defined(SWEET)
++	/*
++	 * MERLIN (patch 0096): when the GIC signals this PE's timer as Group 0 it
++	 * arrives as an FIQ. The non-Apple FIQ path below calls rtclock_intr()
++	 * without ever acknowledging the GIC, which leaves the interrupt active
++	 * and re-enters forever. Read the Group 0 acknowledge now and complete it
++	 * after handling; 1023 means "no FIQ pending" and is skipped.
++	 */
++	uint64_t sweet_fiq_iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
++#endif
++
+ #if defined(HAS_IPI)
+ 	boolean_t    is_ipi = FALSE;
+ 	uint64_t     ipi_sr = 0;
+@@ -2010,6 +2038,14 @@
+ 		__builtin_arm_isb(ISB_SY);
+ 	}
+ #endif
++#if defined(SWEET)
++	if ((uint32_t)(sweet_fiq_iar & 0xFFFFFF) < 1020) {
++		kprintf("MERLIN TIMER: fiq tick intid=%u\n",
++		    (uint32_t)(sweet_fiq_iar & 0xFFFFFF));
++		__builtin_arm_wsr64("ICC_EOIR0_EL1", sweet_fiq_iar);
++		__builtin_arm_isb(ISB_SY);
++	}
++#endif
+ 
+ 	sleh_interrupt_handler_epilogue();
+ #if MACH_ASSERT
+
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2033,6 +2033,11 @@
+ 	return FALSE;
+ }
+ 
++#if defined(SWEET)
++/* MERLIN (patch 0096): timer source chosen by pe_fiq, see pexpert/arm/protos.h. */
++extern uint32_t sweet_timer_is_phys;
++#endif
++
+ kern_return_t
+ ml_interrupt_prewarm(__unused uint64_t deadline)
+ {
+@@ -2053,6 +2058,19 @@
+ 	if (cdp->cpu_set_decrementer_func) {
+ 		cdp->cpu_set_decrementer_func(dec_value);
+ 	} else {
++#if defined(SWEET)
++		/*
++		 * MERLIN (patch 0096): when pe_fiq found the virtual timer's PPI
++		 * unusable on this SoC it selected the physical timer, so the
++		 * decrementer must be armed there and the virtual timer kept masked.
++		 */
++		if (sweet_timer_is_phys) {
++			__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_IMASKED);
++			__builtin_arm_wsr64("CNTP_TVAL_EL0", (uint64_t)dec_value);
++			__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_ENABLE);
++			return;
++		}
++#endif /* SWEET */
+ 		__builtin_arm_wsr64("CNTV_TVAL_EL0", (uint64_t)dec_value);
+ 	}
+ }
