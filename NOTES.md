@@ -1276,3 +1276,38 @@ v33 full-panel confirmation):
   wait-for-provider). If `done` appears but `bsd_init enter` does not, the
   hang is between them (`vm_set_restrictions`/kperf). Either way the same
   photo carries the GIC verdict (both GICR windows) and the eMMC probe result.
+
+### Session 2026-11-17 (cont. 4): the 0091 marker panicked the phone — console I/O with IRQs off is fatal
+
+- **Observation (v54 photo): the phone shows a kernel panic**, not a hang: zone
+  map dump, `CORE 0 is the one that panicked`, task/thread/backtrace, stackshot,
+  then `panic(cpu 0 caller 0xfffffe0007ad45b4)` with the string mangled by
+  `Error!! Current Magic 0xFF000000, expected value 0x46554e4b` (the merlin
+  `/pram` panic-log header is not initialized - a separate, still-open cosmetic
+  bug: the panic string itself is unreadable, the interesting text survives as
+  `...Console I/O from interrupt-disabled context @serial_console.c:168`).
+- **Symbolicated (new `tools/macho-symbolize.py`, parses LC_SYMTAB of the
+  DEVELOPMENT kernel):** caller `0xfffffe0007ad45b4` = `__cnputs.cold.1 + 0`
+  and the stack contains `_Assert`, `_DebuggerTrapWithState`,
+  `_fleh_synchronous`, `__cnputs`, `_Call_continuation`. So **the panic came
+  from console output, not from the eMMC driver or the GIC report**.
+- **Root cause: my own 0091 instrumentation.** `printf("SWEET PHASE:
+  EARLY_BOOT done")` ran immediately after the EARLY_BOOT hooks, i.e. while
+  interrupts were still disabled (`spllo()` comes *after* that point).
+  `osfmk/console/serial_console.c: console_io_allowed()` panics on console I/O
+  with IRQs off once `startup_phase >= STARTUP_SUB_EARLY_BOOT`. Nothing had
+  ever printed there before, so the rule had never bitten on this port.
+  (Consequence for all future merlin instrumentation: no console output
+  between the EARLY_BOOT hooks and `spllo()`; everything the port does today
+  prints later, with IRQs on.)
+- **Patch 0092** (`xnu/patches/0092-merlin-irq-safe-trace.patch`) drops that
+  marker and moves the GIC report + eMMC probe to right after `(void) spllo()`
+  - still before `PE_lockdown_iokit()`, so still above the frontier and inside
+  the 73-row window. The remaining markers (`PE_lockdown_iokit enter/done`,
+  `bsd_init enter`) are unchanged and safe (the `SWEET BATTERY` output proves
+  console I/O works in that context). Committed as `190f6b1`; the v54 image is
+  obsolete and must not be used again.
+- **Status of the port is unchanged** otherwise: the frontier is still the
+  service start inside `PE_lockdown_iokit()`'s matching, the timer is still
+  dead, and the eMMC/GPT answer is still unmeasured (the probe never ran
+  because 0091 panicked before it).
