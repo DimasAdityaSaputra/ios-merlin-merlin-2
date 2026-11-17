@@ -1224,3 +1224,55 @@ v33 full-panel confirmation):
   stall. Tools added this session: `tools/patch-vbmeta.py` (inspect/set the
   Xiaomi byte-123 disable bits; `backup/vbmeta.img` verified SET,
   `out/vbmeta-disabled.img` regenerated).
+
+### Session 2026-11-17 (cont. 3): the stall is BEFORE bsd_init/IOFindBSDRoot (0091 trace + v54)
+
+- **Correction of an earlier inference:** the v53a photo ends at
+  `SWEET BATTERY: static fallback ...` and contains **no** `MERLIN MSDC:` line,
+  although that image's cmdline had `msdcprobe=1` and 0090 hooks the probe at
+  the top of `IOFindBSDRoot`. Therefore `IOFindBSDRoot` is NOT reached - the
+  earlier "the bootstrap thread sits in IOFindBSDRoot's 30 s gIOBSD wait"
+  (v48 analysis) was wrong. Reading `kernel_bootstrap`: `PE_init_iokit()` ends
+  with `InitIOKit(); ConfigureIOKit();`, then EARLY_BOOT hooks run, then
+  `machine_lockdown()`, then **`PE_lockdown_iokit()` -> `StartIOKitMatching()`**
+  (which is what starts the platform expert and our AKS/WDT/SURF/HID/BATTERY
+  services - the photo's last lines), then `bsd_init()`. So the frontier is
+  inside the IOKit matching, i.e. before M2's root path can ever run.
+- Also: with 0087 clear-on-wrap the 0088 GIC readback lines are ~60+ lines
+  above that frontier and are always gone. The timer verdict has therefore
+  never actually been seen outside a boot that panicked inside `pe_init_fiq`
+  (v49). That is why v50/v52's "photo the SWEET GIC lines" plan could not work.
+- **Patch 0091** (`xnu/patches/0091-merlin-phase-trace.patch`):
+  - four `SWEET PHASE:` markers: `EARLY_BOOT done`, `PE_lockdown_iokit
+    enter/done`, `bsd_init enter` (osfmk/kern/startup.c) - localises the stall;
+  - `merlin_gic_report(tag)` (bsd/dev/merlin_msdc.c): live GICD_CTLR/TYPER,
+    GICR TYPER for 4 frames in **both** candidate windows (DT `0x0c040000`
+    and the legacy MTK `gic_cpu` address `0x0c400000` that v49 saw as
+    unmapped), GICR_WAKER/IGROUPR0/ISENABLER0, ICC_IGRPEN1/SRE, CNTFRQ,
+    CNTV_CTL and the one-shot CNTV tick test with ISPENDR0 bit 27 in both
+    windows. Read-only except the tick test (CNTV_CVAL/CTL restored), all
+    loops iteration-bounded;
+  - the 0090 eMMC probe is called **before** the matching (`msdcprobe=1`), so
+    the M2 answer no longer depends on reaching IOFindBSDRoot. The
+    `rd=msdcroot0` hook stays where it is for later.
+- **Build:** xnu dispatch run 44128150372 (DEVELOPMENT) GREEN after 8m36s;
+  log confirms `Applying patch: ...0090...` and `...0091...` and that
+  `merlin_msdc.c` compiled. (The push run 44124928088 shows `cancelled` for
+  its only job - not a compile failure; the dispatch rerun is the proof.)
+  `kernel.development.sweet` SHA256
+  `0fd3fcd0063d9c23c648641ee683c50762db383c31c495ec8656ee50d117fa11`
+  (17,239,248 B).
+- **v54 image (local, user's own header/DTB - the packaging proven on the
+  phone):** `out/shim-boot-merlin-v54-trace.img`,
+  `fastboot flash boot`, SHA256
+  `2b58747fb3091d3858a12ce94e5707a8fc6c2cc4e565c1e98f695c4e1c1668f5`
+  (16,822,272 B), payload `c9df2267…` with cmdline `... noprogress
+  msdcprobe=1`; `tools/verify-bootimg.py` PASS (7/7), and `strings` on the
+  payload shows the four `SWEET PHASE:` strings (trace present).
+- **What the v54 photo decides:** if `SWEET PHASE: PE_lockdown_iokit done` is
+  missing, the hang is inside the IOKit matching (then instrument
+  `startIOServiceMatching`/the service starts; the timer verdict from
+  `MERLIN GIC[prematching]` says whether it is the dead timer or a real
+  wait-for-provider). If `done` appears but `bsd_init enter` does not, the
+  hang is between them (`vm_set_restrictions`/kperf). Either way the same
+  photo carries the GIC verdict (both GICR windows) and the eMMC probe result.
