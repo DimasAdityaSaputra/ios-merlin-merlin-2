@@ -1136,3 +1136,59 @@ v33 full-panel confirmation):
   driver intentionally does not do yet; and mounting the HFS+ root still
   needs the timer or another way to satisfy the remaining BSD waits, plus
   the userspace milestones above.
+
+### Session 2026-11-17 (cont.): 0090 built + v52 image (CI-verified, not yet on the phone)
+
+- **xnu run 44114059320 (push, main, DEVELOPMENT/SWEET): GREEN in 13m56s.**
+  Log proof: `Applying patch ... 0090-merlin-msdc-root.patch` (no skip),
+  `merlin_msdc.c` compiled; only warnings (`-Wdeclaration-after-statement`,
+  the usual `-Wcast-align` / lck-declaration / `eno_dump` cast warnings that
+  `sweet_ufs.c` also carries). Artifact `kernel.development.sweet`
+  SHA256 `c8759f3b22172780095b62510aa9fe19a8f6ef341f744516ce3427e58972c4de`
+  (17,239,152 B). qemu run 44116736479 (auto): GREEN - kernel 0090 boots on
+  QEMU with no panic (the driver is inert there: no `rd=msdcroot0`, no
+  `msdcprobe`).
+- **image run 44117102271 (dispatch: image_tag=v52, extra_cmdline=msdcprobe=1,
+  skip_debug=true): GREEN in 2m04s.** Artifact `merlin-boot-image-v52`:
+  - `shim-boot-merlin-v52-dev.img` SHA256
+    `cf9e12f4ebcc3c0bf60cf17ba5f140333884c3d2da0463b85117df25b21af20b`
+    (16,750,592 B), payload-dev `ecaa0492e995a65649d21708d26874353e3b9c41ba63b4def199daa6a15f9e73`
+    (16,627,792 B, kernel 0090 + merlin ADT + `... noprogress msdcprobe=1`),
+    `merlin.adt` `314c5ba83b9281d428ee345415519e9dafdcb4029c3b02a5076d885509e4f22a`
+    (10,212 B, carries `/merlin-msdc reg = <0x11230000 0x10000>`),
+    shim `288cf8b168d62a9232c32ed9b33ea65bf50dcc63f85db17cd721b42287e2778a`
+    (byte-identical to the field-tested v42 shim), stock pair from the
+    V12.0.3.0 ROM (dtb `26afaecd…`, boot.img `6f1aa4ab…`).
+  - **Independent re-verification on the agent machine** after downloading
+    the artifacts: `tools/verify-bootimg.py` = PASS on all 7 checks and the
+    printed SHA256s match the artifact manifest; `strings` on
+    `payload-dev.bin` contains the 32 `MERLIN MSDC:` format strings (the
+    driver is in the image); the ADT dump shows the `/merlin-msdc` node.
+- **Next on-device test (v52, one flash, two answers):** flash
+  `shim-boot-merlin-v52-dev.img` (the flash doc `FLASH-v52.md` in the
+  artifact carries the instructions + both decision trees) and photo the
+  BOTTOM of the screen. Expected new console content, in boot order:
+  1. the three `SWEET GIC:` lines from 0088 (the timer/GICR verdict), then
+  2. six to ten `MERLIN MSDC:` lines from 0090 (ckstb/ckmode/bus width,
+     CMD13 per RCA, CMD16, LBA0 read, GPT entries, `userdata lookup`), then
+  3. the unchanged gIOBSD stall (the timer is still dead, so the boot ends
+     there as before - that is expected and not a regression).
+  Decision tree for the MSDC half (also in FLASH-v52.md):
+  ckstb=0 -> LK clock state lost (clock bring-up next); `CMD13` error but a
+  later RCA answers -> bootloader RCA differs; no RCA answers -> full card
+  re-init (CMD0/1/2/3 at a low clock) is the next patch; LBA0 read ok but
+  no GPT signature -> read path/descriptor bug; GPT list printed -> compare
+  names with `userdata`.
+- **What is still missing for the port to be "finished" (honest list, in
+  order):** (1) the GIC/vtimer wall (v49/v50/v52 decision tree; without it
+  no timeout-based wait and no userspace scheduler timekeeping work),
+  (2) MSDC: full re-init path if the card does not answer on the
+  bootloader state, then mounting the HFS+ root (`rd=msdcroot0` needs
+  `bsd/conf/files` HFS built in - already true via 0026 - and the image
+  still has to be flashed into the merlin `userdata` partition; the WSL
+  image `out/ios16-root-20H392-merlin.simg` is built but NOT on the phone),
+  (3) M3 SMP (PSCI), (4) display/touch/input/USB/PMIC drivers on MTK
+  hardware, (5) the userspace path (Setup -> SpringBoard) that the sweet
+  track already walked. None of this can be closed without the phone; this
+  session deliberately produced one image that answers two open questions
+  in a single flash.
