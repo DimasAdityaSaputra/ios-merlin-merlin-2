@@ -1192,3 +1192,35 @@ v33 full-panel confirmation):
   track already walked. None of this can be closed without the phone; this
   session deliberately produced one image that answers two open questions
   in a single flash.
+
+### Session 2026-11-17 (cont. 2): v53a BOOTS ON THE PHONE — the loop was image-side, not kernel 0090
+
+- User report sequence: v52 (CI-ROM image) flashed OK but the phone bootlooped;
+  "still loops" after the local v53a flash attempt; then they flashed again and
+  photographed the screen.
+- **Observation (photo, `2026-11-17`): the phone boots to the known wall.** The
+  visible log ends at `SWEET BATTERY: static fallback, 100% 4200mV external=1
+  charging=0` with VM bootstrap / SUBSYS 9-16 / PE / AKS / SURROGATE lines
+  above it - i.e. exactly the v48-era frontier, no reset loop, no panic.
+  So kernel 0090 (0089 DEBUG fixes + the new MSDC driver, inert without a boot
+  arg) boots on merlin hardware, and the v52 loop was the *image*, not the
+  kernel. Prime suspect remains v52's CI-downloaded V12.0.3.0 stock header +
+  108,879 B DTB instead of this phone's own `backup/boot.img` + 181,203 B DTB
+  (the deviation image.yml itself flagged; v51, the only other image built that
+  way, was never flashed, so it was never validated).
+- **Second observation that changes the next test:** with 0087 clear-on-wrap,
+  the `SWEET GIC:` lines from 0088 print ~70+ lines before this frontier and are
+  therefore gone by the time the boot stalls. The v50/v52 "photo the three SWEET
+  GIC lines" instruction cannot work on an image that gets this far - it only
+  worked on v49 because that boot panicked *inside* pe_init_fiq. Any further
+  timer/GIC verdict needs the readbacks re-printed later (small patch) or a
+  deliberate early panic. Not blocking M2: the MSDC probe runs at
+  IOFindBSDRoot, i.e. right at this frontier, so its lines WILL be on screen.
+- **Also confirmed by this photo: the timer wall is unchanged** - the boot stops
+  at the gIOBSD wait with no `!BSD` line, so callouts still never fire.
+- Next single flash test: `out/shim-boot-merlin-v53-msdc.img` (same kernel 0090
+  + user header/DTB, cmdline `msdcprobe=1`). Expected new lines at the bottom:
+  `MERLIN MSDC: CFG/IOCON/CMD13/CMD16/LBA0/GPT/userdata lookup`, then the same
+  stall. Tools added this session: `tools/patch-vbmeta.py` (inspect/set the
+  Xiaomi byte-123 disable bits; `backup/vbmeta.img` verified SET,
+  `out/vbmeta-disabled.img` regenerated).
