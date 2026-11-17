@@ -1,0 +1,61 @@
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -731,12 +731,16 @@
+ 		extern void merlin_gic_report(const char *tag);
+ 		extern int merlin_msdc_probe(void);
+ 		uint32_t sweetProbe = 0;
++		boolean_t probeArg = PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe));
+ 
+-		merlin_gic_report("prematching");
+-		if (PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe)) &&
+-		    sweetProbe) {
+-			printf("MERLIN MSDC: probe result %d\n", merlin_msdc_probe());
++		printf("MERLIN MSDC: bootarg found=%u value=%u\n", probeArg, sweetProbe);
++		/* Do card I/O before the GIC MMIO report; each has an explicit entry marker. */
++		if (probeArg && sweetProbe) {
++			printf("MERLIN MSDC: calling probe\n");
++			int probeError = merlin_msdc_probe();
++			printf("MERLIN MSDC: probe result %d\n", probeError);
+ 		}
++		merlin_gic_report("prematching");
+ 	}
+ #endif
+ 
+diff --git a/bsd/dev/merlin_msdc.c b/bsd/dev/merlin_msdc.c
+--- a/bsd/dev/merlin_msdc.c
++++ b/bsd/dev/merlin_msdc.c
+@@ -439,12 +439,15 @@
+ 	if (md.claimed) {
+ 		return 0;
+ 	}
++	printf("MERLIN MSDC: controller init enter\n");
+ 	if (SecureDTLookupEntry(NULL, "/merlin-msdc", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {
+ 		printf("MERLIN MSDC: no /merlin-msdc node in the device tree\n");
+ 		return ENXIO;
+ 	}
++	printf("MERLIN MSDC: ADT reg %llx size %llx\n",
++	    (uint64_t)reg[0], (uint64_t)reg[1]);
+ 	md.regs = ml_io_map(reg[0], reg[1]);
+ 	if (!md.regs) {
+ 		printf("MERLIN MSDC: cannot map the controller\n");
+@@ -487,13 +490,17 @@
+ 	md.dma_pa = ptoa_64(pn);
+ 	md.secsize = MSDC_BLOCK;
+ 	md.claimed = true;
++	printf("MERLIN MSDC: DMA VA %llx PA %llx size %x\n",
++	    (uint64_t)md.dma, md.dma_pa, DMA_SIZE);
+ 
+ 	/* CMD13 on the bootloader's RCA (eMMC RCA is 1 for MTK LK). */
+ 	uint32_t status = 0;
++	printf("MERLIN MSDC: CMD13 start, controller regs VA %llx\n", (uint64_t)md.regs);
+ 	error = md_card_status(&status, 1);
+ 	printf("MERLIN MSDC: CMD13 rca 1 -> %d, status %08x (state %u)\n",
+ 	    error, status, (status >> 9) & 0xf);
+ 	if (error) {
++		printf("MERLIN MSDC: CMD13 rca 1 error %d, trying other RCA\n", error);
+ 		/* Some bootloaders hand over RCA 0 or 2; report, do not guess. */
+ 		for (uint32_t rca = 0; rca <= 2; rca++) {
+ 			uint32_t st = 0;
