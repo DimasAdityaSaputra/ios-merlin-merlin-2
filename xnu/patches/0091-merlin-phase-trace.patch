@@ -1,0 +1,147 @@
+diff --git a/bsd/dev/merlin_msdc.c b/bsd/dev/merlin_msdc.c
+--- a/bsd/dev/merlin_msdc.c
++++ b/bsd/dev/merlin_msdc.c
+@@ -834,4 +834,88 @@
+ 	*dev = md.bdev;
+ 	return 0;
+ }
++/*
++ * Late GIC/timer report (patch 0091).
++ *
++ * The 0088 readback probe runs in pe_init_fiq, far above the console's 73
++ * visible rows, so with 0087's clear-on-wrap its verdict is gone long before
++ * the boot reaches the frontier that matters. This re-reads the live state at
++ * call time - GICD_CTLR, both GICR candidate windows (the DT value
++ * 0x0c040000 and the legacy MTK gic_cpu address 0x0c400000 that v49 found
++ * unmapped), the CPU interface, CNTFRQ - and repeats the one-shot virtual
++ * timer tick test (CNTV_CVAL = now + 100 us, then CNTV_CTL.ISTATUS and
++ * GICR_ISPENDR0 bit 27 in both windows). Read-only except that test, whose
++ * CNTV_CVAL/CNTV_CTL are restored; every loop is iteration-bounded, so it
++ * cannot add a new way to hang. No ADT dependency on purpose: absolute
++ * addresses, so it also works when the ADT's GIC node is suspect.
++ */
++static inline uint32_t
++md_rd32(vm_offset_t base)
++{
++	return *(volatile uint32_t *)base;
++}
++
++static inline uint64_t
++md_rd64(vm_offset_t base)
++{
++	return *(volatile uint64_t *)base;
++}
++
++void merlin_gic_report(const char *tag);
++
++void
++merlin_gic_report(const char *tag)
++{
++	static const uint64_t windows[2] = { 0x0c040000ull, 0x0c400000ull };
++	static const char *const names[2] = { "dt", "legacy" };
++	vm_offset_t gicd = ml_io_map(0x0c000000ull, 0x40000);
++	vm_offset_t gicr[2];
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	uint64_t ctl_saved, cval_saved;
++	uint32_t istatus = 0;
++	unsigned w, f;
++
++	if (!gicd) {
++		printf("MERLIN GIC[%s]: cannot map GICD\n", tag);
++		return;
++	}
++	for (w = 0; w < 2; w++) {
++		gicr[w] = ml_io_map(windows[w], 0x200000);
++		if (!gicr[w]) {
++			printf("MERLIN GIC[%s]: cannot map GICR %s\n", tag, names[w]);
++			return;
++		}
++	}
++
++	printf("MERLIN GIC[%s]: mpidr=%llx gicd_ctlr=%08x gicd_typer=%08x\n", tag,
++	    mpidr, md_rd32(gicd), md_rd32(gicd + 0x4));
++	for (w = 0; w < 2; w++) {
++		printf("MERLIN GIC[%s]: %s typer %llx %llx %llx %llx\n", tag, names[w],
++		    md_rd64(gicr[w] + 0x00000 + 0x8), md_rd64(gicr[w] + 0x20000 + 0x8),
++		    md_rd64(gicr[w] + 0x40000 + 0x8), md_rd64(gicr[w] + 0x60000 + 0x8));
++		printf("MERLIN GIC[%s]: %s f0 waker=%08x igrp=%08x isen=%08x\n", tag,
++		    names[w], md_rd32(gicr[w] + 0x14), md_rd32(gicr[w] + 0x10080),
++		    md_rd32(gicr[w] + 0x10100));
++	}
++	printf("MERLIN GIC[%s]: igrpen1=%llx sre=%llx cntfrq=%llx cntv_ctl=%llx\n",
++	    tag, __builtin_arm_rsr64("ICC_IGRPEN1_EL1"),
++	    __builtin_arm_rsr64("ICC_SRE_EL1"), __builtin_arm_rsr64("CNTFRQ_EL0"),
++	    __builtin_arm_rsr64("CNTV_CTL_EL0"));
++
++	cval_saved = __builtin_arm_rsr64("CNTV_CVAL_EL0");
++	ctl_saved = __builtin_arm_rsr64("CNTV_CTL_EL0");
++	__builtin_arm_wsr64("CNTV_CVAL_EL0", __builtin_arm_rsr64("CNTVCT_EL0") + 1300);
++	__builtin_arm_wsr64("CNTV_CTL_EL0", 1);
++	for (f = 0; f < 2000000u; f++) {
++		if (__builtin_arm_rsr64("CNTV_CTL_EL0") & 0x4) {
++			istatus = 1;
++			break;
++		}
++	}
++	printf("MERLIN GIC[%s]: tick istatus=%u pend %s=%08x %s=%08x\n", tag, istatus,
++	    names[0], md_rd32(gicr[0] + 0x10200), names[1], md_rd32(gicr[1] + 0x10200));
++	__builtin_arm_wsr64("CNTV_CVAL_EL0", cval_saved);
++	__builtin_arm_wsr64("CNTV_CTL_EL0", ctl_saved);
++	__builtin_arm_isb(0xf);
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -697,6 +697,10 @@
+ 	 */
+ 	kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("SWEET PHASE: EARLY_BOOT done\n");
++#endif
++
+ #if SCHED_HYGIENE_DEBUG
+ 	// Reset interrupts masked timeout before we enable interrupts
+ 	ml_spin_debug_clear_self();
+@@ -770,7 +774,30 @@
+ 
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * MERLIN phase trace + last-minute diagnostics (patch 0091). The boot's
++	 * visible frontier is the service start inside the matching below, so
++	 * this runs before it - and it is the last point where the console can
++	 * still show the GIC/timer state and the eMMC probe result.
++	 */
++	printf("SWEET PHASE: PE_lockdown_iokit enter\n");
++	{
++		extern void merlin_gic_report(const char *tag);
++		extern int merlin_msdc_probe(void);
++		uint32_t sweetProbe = 0;
++
++		merlin_gic_report("prematching");
++		if (PE_parse_boot_argn("msdcprobe", &sweetProbe, sizeof(sweetProbe)) &&
++		    sweetProbe) {
++			printf("MERLIN MSDC: probe result %d\n", merlin_msdc_probe());
++		}
++	}
++#endif
+ 	PE_lockdown_iokit();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("SWEET PHASE: PE_lockdown_iokit done\n");
++#endif
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+@@ -787,6 +814,9 @@
+ 	 *	Start the user bootstrap.
+ 	 */
+ #ifdef  MACH_BSD
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("SWEET PHASE: bsd_init enter\n");
++#endif
+ 	bsd_init();
+ #endif
+ 
