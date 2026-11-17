@@ -1365,3 +1365,35 @@ v33 full-panel confirmation):
   user `backup/boot.img` header + `dtb/stock-merlin.dtb`, 0093 ADT. Verifier
   PASS (7/7); payload strings independently contain all new checkpoint
   strings. It has not been flashed.
+
+### Session 2026-11-17 (cont. 7): v56 'no change' decoded — 0094 was skipped in CI, guard was vacuous; real v57 ready
+
+- User: v56 = "no change". Decoded from the run logs, not guessed:
+  1. **0094 never reached the kernel**: CI run 44146894977 logged
+     `Skipping patch ...0094-merlin-late-diagnostics.patch ... error: patch
+     failed: osfmk/kern/startup.c:717`. My 0094 diff had been generated
+     against the 0092-state startup.c (so it also carried 0093's hunks);
+     after 0093 the context no longer matched. The strings in the packaged
+     v56 payload confirm it (still `SWEET PHASE: interrupts enabled`, no
+     `pre-matching diagnostics`).
+  2. **The skip-guard passed vacuously**: the Build step runs with
+     `working-directory: dxb`, so its `tee build.log` wrote `dxb/build.log`;
+     the guard grepped `build.log` in the repo root, grep exited 2 (file
+     missing) and the `if` read that as "nothing skipped". Every skipped
+     patch since the working-directory change sailed through.
+- Fixes (commit `6581a4b`): 0094 regenerated from the 0093-state file
+  (dry-run verified against exactly that state), and the guard now greps
+  `dxb/build.log` (`-a` for the ANSI-colored warning), failing loudly if the
+  log is missing. xnu run **44149865276** GREEN: log shows
+  `Applying patch ...0094...` and the guard's `no numbered patch skipped`
+  (now from a file that exists). `kernel.development.sweet` SHA256
+  `a7f4771c11a35ca37c6a2cb4b3615b6f7d84fbb5dd8a677ec076c70d5e1988e7`.
+- **v57 image (real 0094, local user header/DTB):**
+  `out/shim-boot-merlin-v57-late-diag.img` SHA256
+  `0e79904e357f3614aadeba0527ba428949a2a7630818c20408f1e773288a8164`
+  (16,822,272 B), payload `fcb7257f…` (contains `SWEET PHASE: pre-matching
+  diagnostics` + `MERLIN MSDC: bootarg found/calling probe`, and NOT
+  `interrupts enabled`), verifier PASS 7/7.
+- Everything the user saw as "no change" for v55/v56 is consistent: both
+  kernels were effectively 0093 (v55) / 0093+misbased (v56) with the
+  diagnostics ~40 rows above the photo region.
