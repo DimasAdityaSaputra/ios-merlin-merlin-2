@@ -107,7 +107,7 @@ def stub(ba_pa, entry_pa):
 def write_png(path, raw):
     rows = []
     for y in range(FB_H):
-        line = raw[y * FB_STRIDE:(y + 1) * FB_STRIDE]
+        line = raw[y * FB_STRIDE:y * FB_STRIDE + FB_W * 4]
         rgb = bytearray(FB_W * 3)       # a8r8g8b8 little endian = B G R A in memory
         rgb[0::3], rgb[1::3], rgb[2::3] = line[2::4], line[1::4], line[0::4]
         rows.append(b'\0' + bytes(rgb))

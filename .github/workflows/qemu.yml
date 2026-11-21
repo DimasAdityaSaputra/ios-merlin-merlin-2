@@ -72,6 +72,12 @@ jobs:
             tools/qemu-sweet.py > tools/qemu-merlin.py
           grep -n "^FB_BASE" tools/qemu-merlin.py
           grep -n "^FB_STRIDE = 1088 \* 4$" tools/qemu-merlin.py
+          python3 - <<'PY'
+          import runpy
+          harness = runpy.run_path("tools/qemu-merlin.py")
+          harness["write_png"]("/tmp/qemu-merlin-blank.png",
+                               bytes(harness["FB_STRIDE"] * harness["FB_H"]))
+          PY
 
       - name: Boot in QEMU
         run: |
