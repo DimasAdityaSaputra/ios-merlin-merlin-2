@@ -1472,3 +1472,23 @@ v33 full-panel confirmation):
   on panic or early QEMU exit instead of masking the harness result.
 - This is a kernel milestone only. No root filesystem, PID 1, or SpringBoard
   has run, and the phone was not modified.
+
+### Session 2026-11-22: mockfs root reaches diagnostic PID 1 in QEMU
+
+- Framebuffer-stride fix commit `5a56db8` passed fork QEMU run `44957792072`;
+  the generated 1088-pixel-stride harness now decodes with zero unknown
+  glyphs instead of masking row padding or an early harness exception.
+- Built `tools/sweet-init.S` as the existing static mockfs root executable
+  and packed it with the linked kernel using `mkpayload.py --ramdisk` plus
+  `rd=md0`. No kernel, debugger, or RAM edits were used.
+- A fresh local 60-second QEMU run on QEMU 10.2.1 reported
+  `no_panic_observed`, created `md0`, selected `BSD root: md0`, attempted
+  `/sbin/launchd`, and printed `SWEET userspace: init running as PID 1`
+  followed by five `still alive` heartbeats. The init SHA-256 is
+  `f5de3714ff95e6a3b9ece30723f677de0f3f74ec5eb985a00c5ae872f0ac9bf1`;
+  the payload SHA-256 is
+  `513045b0350612db35790a89c1c00e1a662b82dbe336ff4b1c2005758c435ebd`.
+- The QEMU workflow now builds this mockfs root and requires both PID 1 and
+  heartbeat markers. This proves the kernel/user boundary and a diagnostic
+  PID 1 only; compatible iOS `dyld`, `launchd`, frameworks, and SpringBoard
+  have not run. The phone was not modified.

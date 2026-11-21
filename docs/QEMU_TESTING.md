@@ -61,10 +61,13 @@ If dependencies are missing, install them:
    python3 tools/mkadt.py /tmp/qemu.adt --qemu
    ```
 
-2. **Pack the Kernel and ADT into a SWEETXNU Payload:**
+2. **Build the static mockfs init and pack it as the `md0` root:**
    ```sh
+   clang -target arm64-apple-ios16.0 -c tools/sweet-init.S -o /tmp/sweet-init.o
+   python3 tools/mkinit.py /tmp/sweet-init.o /tmp/sweet-init
    python3 tools/mkpayload.py xnu/out/kernel.development.sweet /tmp/qemu.adt /tmp/payload-qemu.bin \
-       --cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam rd=md0'
+       --cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam rd=md0' \
+       --ramdisk /tmp/sweet-init
    ```
 
 ---

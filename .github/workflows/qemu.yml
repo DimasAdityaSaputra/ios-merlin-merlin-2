@@ -33,7 +33,7 @@ jobs:
       - name: Deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm llvm
+          sudo apt-get install -y qemu-system-arm llvm clang
 
       - name: Fetch latest green kernel artifact
         run: |
@@ -57,13 +57,18 @@ jobs:
           sha256sum "$KERNEL"
           echo "KERNEL_BIN=$PWD/$KERNEL" >> "$GITHUB_ENV"
 
-      - name: Build payload (QEMU ADT)
+      - name: Build mockfs root payload (QEMU ADT)
         run: |
           mkdir -p out
           python3 tools/mkadt-merlin.py out/merlin-qemu.adt --qemu
+          clang -target arm64-apple-ios16.0 -c tools/sweet-init.S \
+            -o out/sweet-init.o
+          python3 tools/mkinit.py out/sweet-init.o out/sweet-init
+          sha256sum out/sweet-init
           python3 tools/mkpayload.py "$KERNEL_BIN" \
             out/merlin-qemu.adt out/payload-qemu.bin \
-            --cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress"
+            --cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=md0" \
+            --ramdisk out/sweet-init
 
       - name: Derive qemu-merlin harness (merlin fb geometry)
         run: |
@@ -83,6 +88,8 @@ jobs:
         run: |
           python3 tools/qemu-merlin.py out/payload-qemu.bin out/qemu \
             --secs 60 --kernel "$KERNEL_BIN" --fail-on-panic
+          grep -F "*** SWEET userspace: init running as PID 1 ***" out/qemu/fb.txt
+          grep -F "SWEET init: still alive" out/qemu/fb.txt
           ls -la out/qemu/
 
       - name: Show screen + result
