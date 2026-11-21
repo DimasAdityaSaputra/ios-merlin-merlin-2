@@ -1,0 +1,12 @@
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -152,6 +152,8 @@ pe_init_fiq()
+ 			}
+ 			sweet_vtimer_intid = intid;
+ 		}
++		/* The physical fallback below may override this virtual selection. */
++		sweet_timer_intid = sweet_vtimer_intid;
+ 		kprintf("SWEET GIC: virtual timer INTID %u\n", sweet_vtimer_intid);
+ #endif
+ 

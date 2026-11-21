@@ -1,0 +1,14 @@
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -808,8 +808,9 @@ kernel_bootstrap_thread(void)
+ 			printf("MERLIN MSDC: calling probe\n");
+ 			int probeError = merlin_msdc_probe();
+ 			printf("MERLIN MSDC: probe result %d\n", probeError);
++			/* Hard-coded MT6768 MMIO is safe only in an explicit device probe. */
++			merlin_gic_report("prematching");
+ 		}
+-		merlin_gic_report("prematching");
+ 	}
+ 	printf("SWEET PHASE: PE_lockdown_iokit enter\n");
+ #endif

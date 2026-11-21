@@ -1430,3 +1430,26 @@ v33 full-panel confirmation):
   `9196e7a9d5f1a427b48e2f2ad3d9ccc549ac326dba909c417fa4b0f36e74333e`,
   payload `be84cb12…` (contains all 0095 markers), cmdline
   `... noprogress msdcprobe=1`. Not yet flashed.
+
+### Session 2026-11-22: timer and MT6768 CPU matching validated locally
+
+- Added uncommitted patches `0097-merlin-initialize-selected-timer.patch`,
+  `0098-merlin-cpu-personality-match.patch`, and
+  `0099-merlin-gate-hardware-gic-report.patch`. The first synchronizes the
+  selected timer ID after parsing `virtual-timer-intid`; the second lets the
+  existing `SweetCPU` personality match both `qcom,kryo470` and the actual
+  `mediatek,mt6768` ADT; the third runs the hard-coded MT6768 GIC MMIO report
+  only when `msdcprobe=1`, so normal QEMU does not touch phone-only addresses.
+- Fresh build-tree patch checks passed. `test-timer-selection.py` passed 8/8,
+  `test-cpu-match.py` passed all 8 CPU nodes, and repository validation passed.
+  `pe_fiq.c`, `startup.c`, and the thread-layout helper compiled to ARM64
+  Mach-O with the saved CI flags; `KernelConfigTables.cpp` passed ARM64 C++
+  syntax checking. The GIC-report regression test failed against the original
+  CI source and passed after 0099; the complete 0097-0099 series applies to a
+  freshly extracted CI tree.
+- The prior emulator-only CPU-name experiment reached both `bsd_init` and
+  `IOFindBSDRoot`. It is evidence for the personality mismatch, not a linked
+  kernel result. No phone writes were made.
+- GitHub CLI is authenticated as `DimasAdityaSaputra`. Configure identity only
+  in this repository, using the account's public name/email. Push remains a
+  separate user approval because it triggers the XNU workflow.
