@@ -1453,3 +1453,22 @@ v33 full-panel confirmation):
 - GitHub CLI is authenticated as `DimasAdityaSaputra`. Configure identity only
   in this repository, using the account's public name/email. Push remains a
   separate user approval because it triggers the XNU workflow.
+
+### Session 2026-11-22: linked kernel reaches the root-filesystem wait in QEMU
+
+- Commit `e770104` was built on fork CI run `44955580713`. The log confirms
+  patches `0097`-`0099` were applied, no numbered patch was skipped, and the
+  DEVELOPMENT/SWEET kernel linked successfully.
+- Downloaded `kernel.development.sweet` is 17,239,280 bytes with SHA-256
+  `11406616ab91b8eb1db33bc18fded6a860877ae0902a5acd8b2650cf3688e9a2`.
+- QEMU run `44956445775` used the normal cmdline (no `msdcprobe=1` and no RAM
+  edits). The framebuffer proves timer tick 3 on INTID 27, all 1/1 CPUs
+  initialized, BSD/network startup completed, and the kernel reached the
+  `IOFindBSDRoot` wait for an `IOMedia` containing `Apple_HFS`.
+- The run initially reported `incomplete_decode` because the generated Merlin
+  harness retained a 1080-pixel framebuffer stride. The physical stride is
+  1088 pixels; reconstructing the captured bytes with `1088 * 4` decoded with
+  zero unknown glyphs. The workflow now sets that stride explicitly and fails
+  on panic or early QEMU exit instead of masking the harness result.
+- This is a kernel milestone only. No root filesystem, PID 1, or SpringBoard
+  has run, and the phone was not modified.
